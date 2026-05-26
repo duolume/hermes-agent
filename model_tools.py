@@ -747,6 +747,7 @@ def handle_function_call(
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     skip_pre_tool_call_hook: bool = False,
+    tool_ctx: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -837,12 +838,14 @@ def handle_function_call(
                 function_name, function_args,
                 task_id=task_id,
                 enabled_tools=sandbox_enabled,
+                tool_ctx=tool_ctx,
             )
         else:
             result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
                 user_task=user_task,
+                tool_ctx=tool_ctx,
             )
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 

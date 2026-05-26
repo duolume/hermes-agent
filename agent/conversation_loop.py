@@ -469,11 +469,30 @@ def run_conversation(
             _should_review_memory = True
             agent._turns_since_memory = 0
 
-    # Add user message
-    user_msg = {"role": "user", "content": user_message}
-    messages.append(user_msg)
-    current_turn_user_idx = len(messages) - 1
-    agent._persist_user_message_idx = current_turn_user_idx
+    # Add user message — UNLESS this is a continuation invocation (empty
+    # user_message + history tail is a tool_result). The tui_gateway's
+    # kick_session() path uses an empty prompt to resume a session whose
+    # history a plugin has already extended with a synthetic tool_result
+    # (e.g. the Arven durable widget after a user clicks a widget that
+    # arrived during a previous gateway uptime). In that case the model's
+    # next API call is "what comes after this tool_result?" — no user
+    # turn needed. Appending an empty {"role":"user","content":""} would
+    # be rejected by Anthropic and confuse other providers.
+    _is_continuation_kick = (
+        isinstance(user_message, str)
+        and user_message == ""
+        and messages
+        and isinstance(messages[-1], dict)
+        and messages[-1].get("role") == "tool"
+    )
+    if _is_continuation_kick:
+        current_turn_user_idx = len(messages) - 1
+        agent._persist_user_message_idx = None
+    else:
+        user_msg = {"role": "user", "content": user_message}
+        messages.append(user_msg)
+        current_turn_user_idx = len(messages) - 1
+        agent._persist_user_message_idx = current_turn_user_idx
     
     if not agent.quiet_mode:
         _print_preview = _summarize_user_message_for_log(user_message)

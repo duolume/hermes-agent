@@ -1627,12 +1627,31 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     elif function_name == "delegate_task":
         return agent._dispatch_delegate_task(function_args)
     else:
+        # tool_ctx exposes minimal agent surface area to plugin-registered tool
+        # handlers — used by long-running / suspended tools (e.g. the Arven
+        # durable widget) that need to (a) force-persist the in-progress
+        # assistant tool_use to state.db before blocking, so a gateway crash
+        # mid-wait can be recovered on next session resume, and (b) know the
+        # current session_id to coordinate external storage. Kept deliberately
+        # narrow: handlers reach into agent internals at their own risk.
+        def _flush_db() -> None:
+            try:
+                if messages is not None:
+                    agent._flush_messages_to_session_db(messages)
+            except Exception:
+                logger.debug("tool_ctx.flush_session_db failed", exc_info=True)
+        tool_ctx = {
+            "session_id": agent.session_id or "",
+            "tool_call_id": tool_call_id or "",
+            "flush_session_db": _flush_db,
+        }
         return _ra().handle_function_call(
             function_name, function_args, effective_task_id,
             tool_call_id=tool_call_id,
             session_id=agent.session_id or "",
             enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
             skip_pre_tool_call_hook=True,
+            tool_ctx=tool_ctx,
         )
 
 

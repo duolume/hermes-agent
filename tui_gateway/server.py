@@ -3274,8 +3274,86 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
+# Plugin-facing hook list. Callbacks fire UNDER session["history_lock"] right
+# before the new user message is processed, so a plugin can atomically inject
+# tool-result messages (or otherwise mutate session["history"]) and have the
+# subsequent agent turn see the updated history. Used by the Arven durable
+# widget plugin to mark pending widgets as "user-typed-instead" when the user
+# sends a new prompt instead of clicking the widget, so the model receives a
+# real tool_result with the typed text rather than a "no response" stub.
+#
+# Signature: cb(session_key: str, session: dict, text: Any) -> None
+# Exceptions are caught and logged — a faulty plugin must not block the turn.
+_before_prompt_submit_callbacks: list = []
+
+
+def register_before_prompt_submit(cb) -> None:
+    """Register a callback fired (under history_lock) just before the next
+    agent turn starts. Plugins should mutate session["history"] in place when
+    they need to inject synthetic tool_result messages before the upcoming
+    prompt is processed. See the comment on _before_prompt_submit_callbacks.
+    """
+    if cb not in _before_prompt_submit_callbacks:
+        _before_prompt_submit_callbacks.append(cb)
+
+
+def kick_session(session_key: str) -> bool:
+    """Spawn an agent continuation for an idle session WITHOUT a new user
+    message — the agent loads the (already-updated) conversation history,
+    sees the synthetic tool_result the plugin just injected, and produces
+    the next assistant turn naturally.
+
+    Used by plugins (the Arven durable widget) when an out-of-band event —
+    e.g. a user clicking a widget that survived a gateway restart — needs
+    to resume the conversation without waiting for the user to type
+    something extra.
+
+    Returns False if the session is unknown or already running. The caller
+    is responsible for ensuring conversation_history already contains the
+    paired tool_result before calling (in both session["history"] and
+    state.db); see run_conversation's empty-prompt path for the tail
+    invariant it expects.
+    """
+    session = _sessions.get(session_key)
+    if session is None:
+        return False
+    with session["history_lock"]:
+        if session.get("running"):
+            return False
+        session["running"] = True
+    _start_agent_build(session_key, session)
+
+    def _run_after_ready() -> None:
+        err = _wait_agent(session, "")
+        if err:
+            with session["history_lock"]:
+                session["running"] = False
+            _emit(
+                "error",
+                session_key,
+                {"message": err.get("error", {}).get("message", "agent init failed")},
+            )
+            return
+        _run_prompt_submit("", session_key, session, "")
+
+    threading.Thread(target=_run_after_ready, daemon=True).start()
+    return True
+
+
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
     with session["history_lock"]:
+        # Plugin hook: fire BEFORE snapshotting history so plugins that need
+        # to inject synthetic tool_result messages (durable widgets, async
+        # tool-result delivery, etc.) can do so atomically. Faulty plugins
+        # must not break the turn — exceptions are swallowed and logged.
+        for _cb in list(_before_prompt_submit_callbacks):
+            try:
+                _cb(sid, session, text)
+            except Exception:
+                print(
+                    f"[tui_gateway] before_prompt_submit callback failed: {_cb!r}",
+                    file=sys.stderr,
+                )
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
