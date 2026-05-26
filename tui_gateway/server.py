@@ -3147,6 +3147,32 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    # Fire before_prompt_submit callbacks BEFORE the busy check too. A
+    # plugin (e.g. the Arven durable widget) may need to resolve a blocking
+    # tool — by signaling its threading.Event with a typed-instead answer —
+    # so that ``session.running`` can transition False and this prompt can
+    # be processed. Otherwise the typed text would be silently dropped while
+    # the agent is parked. Hook signature mirrors the in-loop one.
+    #
+    # We deliberately fire the hook WITHOUT holding history_lock so the
+    # plugin can take its own locks (pending_widgets db) and so the busy
+    # poll below can observe the agent thread releasing the lock and
+    # setting running=False.
+    with session["history_lock"]:
+        for _cb in list(_before_prompt_submit_callbacks):
+            try:
+                _cb(sid, session, text)
+            except Exception:
+                print(
+                    f"[tui_gateway] before_prompt_submit (busy-path) callback failed: {_cb!r}",
+                    file=sys.stderr,
+                )
+    # Bounded wait for the agent to unwind after the hook resolved its
+    # pending tool. We poll without the lock so the agent thread can run.
+    if session.get("running"):
+        _deadline = time.time() + 5.0
+        while session.get("running") and time.time() < _deadline:
+            time.sleep(0.05)
     with session["history_lock"]:
         if session.get("running"):
             return _err(rid, 4009, "session busy")
