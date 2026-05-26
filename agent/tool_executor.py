@@ -746,12 +746,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 spinner.start()
             _spinner_result = None
             try:
+                from agent.agent_runtime_helpers import build_tool_ctx
                 function_result = _ra().handle_function_call(
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                     skip_pre_tool_call_hook=True,
+                    tool_ctx=build_tool_ctx(agent, tool_call.id, messages),
                 )
                 _spinner_result = function_result
             except Exception as tool_error:
@@ -766,12 +768,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent._vprint(f"  {cute_msg}")
         else:
             try:
+                from agent.agent_runtime_helpers import build_tool_ctx
                 function_result = _ra().handle_function_call(
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                     skip_pre_tool_call_hook=True,
+                    tool_ctx=build_tool_ctx(agent, tool_call.id, messages),
                 )
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
